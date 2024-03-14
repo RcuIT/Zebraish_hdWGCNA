@@ -1,0 +1,295 @@
+---
+title: "Identification of Gene Moldules In Larvae Brain Progenitors"
+output: html_notebook
+---
+
+```{r Load Required libraries}
+library(Seurat)
+library(WGCNA)
+library(hdWGCNA)
+library(tidyverse)
+library(UCell)
+library(cowplot)
+library(patchwork)
+library(qlcMatrix)
+library(igraph)
+library(ggplot2)
+library(corrplot)
+library(MetBrewer)
+```
+
+```{r using the cowplot theme for ggplot}
+#Using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+```
+
+```{r set random seed for reproducibility}
+#Set random seed for reproducibility
+set.seed(12345)
+```
+
+```{r optionally enable multithreading}
+#Optionally enable multithreading
+enableWGCNAThreads(nThreads = 8)
+```
+
+```{r Load Seurat Object}
+#Load Seurat Object
+larave.intigrated <- readRDS("larval.integrated.rds")
+```
+
+```{r Set Default Assay to integrated}
+#Set Default Assay to integrated
+DefaultAssay(larave.intigrated) <- "integrated"
+```
+
+```{r Scale data }
+larave.intigrated <- ScaleData(larave.intigrated, verbose = FALSE)
+```
+
+```{r Run PCA}
+#Run PCA
+larave.intigrated <- RunPCA(larave.intigrated, npcs = 30, verbose = FALSE)
+```
+
+```{r Run non-linear dimentional reduction UMAP}
+#Run non-linear dimentional reduction UMAP
+larave.intigrated <- RunUMAP(larave.intigrated, reduction = "pca", dims = 1:30)
+```
+
+```{r Find neighbors}
+#Find neighbors
+larave.intigrated <- FindNeighbors(larave.intigrated, reduction = "pca", dims = 1:30)
+```
+
+```{r Find Clusters}
+#Find Clusters
+larave.intigrated <- FindClusters(larave.intigrated, resolution = 0.05)
+```
+
+```{r Cell type annotation}
+#Cell type annotation
+cell.type <-     c('0'	='progenitor',
+                   '1'	='Differentiating progenitor',
+                   '2'	='progenitor',
+                   '3'	='progenitor',
+                   '4'	='progenitor',
+                   '5'	='progenitor',
+                   '6'	='progenitor',
+                   '7'	='progenitor'
+)
+```
+
+```{r Set back default assay to RNA}
+#Set back default assay to RNA
+DefaultAssay(larave.intigrated) <- "RNA"
+```
+
+```{r Get variable genes in the integrated seurat object}
+#Get variable genes in the integrated seurat object
+var.features <- larave.intigrated@assays$integrated@var.features
+```
+
+```{r}
+#Set up Seurat object for WGCNA analysis
+larave.intigrated <- SetupForWGCNA(larave.intigrated, 
+                                   features = var.features, 
+                                   wgcna_name = "intermediate.progenitor")
+```
+
+I generate the metacell using the following parameters. I specify the "cluster.names" in the seurat metadata as the parameter to group.by and ident.group parameter. Additionally, maximum number of shared cells between two metacells kept as 10 in the mas_shared parameter together with 25 nearest neighbors, the parameter k. 
+
+```{r}
+#Construct metacells  in each group
+larave.intigrated <- MetacellsByGroups(
+  seurat_obj = larave.intigrated,
+  group.by = "cluster.names",
+  reduction = 'pca',
+  k = 25, 
+  max_shared = 10, 
+  ident.group = 
+)
+```
+
+```{r}
+#Normalize metacell expression matrix
+larave.intigrated <- NormalizeMetacells(larave.intigrated)
+```
+
+```{r}
+#Set up the expression matrix
+#I used the name of the group of interest in the group.by column
+#I used RNA assay
+#I used data slot for the normalized data 
+larave.intigrated <- SetDatExpr(
+  larave.intigrated,
+  group_name = "progenitor", 
+  group.by="cluster.names", 
+  assay = 'RNA', 
+  slot = 'data' 
+)
+```
+
+```{r}
+#Test different soft powers:
+larave.intigrated <- TestSoftPowers(
+  larave.intigrated,
+  networkType = 'signed' 
+)
+```
+
+```{r}
+#Plot the results:
+plot_list <- PlotSoftPowers(larave.intigrated)
+```
+
+```{r}
+#Assemble with patchwork
+wrap_plots(plot_list, ncol=2)
+```
+
+```{r}
+# construct co-expression network:
+larave.intigrated <- ConstructNetwork(
+  larave.intigrated, soft_power=6,
+  setDatExpr=FALSE,
+  tom_name = 'Larvae.progenitor',
+  overwrite_tom = TRUE
+)
+```
+
+```{r}
+#Generate dendrogram
+larvae.dendrogram <- PlotDendrogram(larave.intigrated, main='Progenitor Dendrogram')
+```
+
+I am panning to change the default module colors in the dendrogram.
+
+```{r}
+#Get a table of just the module and it's unique color
+mod_color_df <- GetModules(larave.intigrated) %>%
+                           dplyr::select(c(module, color)) %>%
+                           distinct %>% arrange(module)
+```
+
+```{r}
+# The number of unique modules (subtract 1 because the grey module stays grey):
+n_mods <- nrow(mod_color_df) - 1
+```
+
+```{r}
+#Using the "Signac" palette from metbrewer, selecting for the number of modules
+new_colors <- paste0(met.brewer("Signac", n=n_mods))
+```
+
+```{r}
+#Reset the module colors
+larave.intigrated <- ResetModuleColors(larave.intigrated, new_colors)
+```
+
+```{r}
+#Re-run plotDendrogramfunction
+new.larvae.dendrogram <- PlotDendrogram(larave.intigrated , main='Recolored Dendrogram')
+```
+
+```{r}
+#Get topoligcal overlap matrix
+TOM <- GetTOM(larave.intigrated)
+```
+
+```{r}
+#Need to run ScaleData first or else harmony throws an error:
+larave.intigrated <- ScaleData(larave.intigrated, features=var.features)
+```
+
+```{r}
+# compute all MEs in the full single-cell dataset
+larave.intigrated  <- ModuleEigengenes(larave.intigrated,group.by.vars= "cluster.names")
+```
+
+```{r}
+#Harmonized module eigengenes:
+hMEs <- GetMEs(larave.intigrated)
+```
+
+```{r}
+#Get module eigengenes:
+MEs <- GetMEs(larave.intigrated, harmonized=FALSE)
+```
+
+```{r}
+#Compute eigengene-based connectivity (kME):
+larave.intigrated <- ModuleConnectivity(larave.intigrated,
+                                        group.by = 'cluster.names', 
+                                        group_name = 'progenitor'
+                                        )
+```
+
+```{r}
+#Rename the modules
+larave.intigrated <- ResetModuleNames(larave.intigrated, new_name = "Module_")
+```
+
+```{r}
+#Plot genes ranked by kME for each module
+pKME <- PlotKMEs(larave.intigrated, text_size = 4, ncol=5)
+pKME+ plot_layout(ncol = 4)
+```
+
+```{r}
+#Get the module assignment table:
+modules.table <- GetModules(larave.intigrated)
+modules.table <- modules.table %>% arrange(color) 
+write.csv(modules.table, file = "larvae.module.gene.list.new.module.color.csv")
+```
+
+```{r}
+#Get hub genes
+hub_df <- GetHubGenes(larave.intigrated, n_hubs = 10)
+write.csv(hub_df, file= "larave.hub.genes.csv")
+```
+
+```{r}
+#Compute gene scoring for the top 25 hub genes by kME for each module with Seurat method
+larave.intigrated <- ModuleExprScore(larave.intigrated,
+                                     n_genes = 25,
+                                     method='Seurat'
+                                    )
+```
+
+```{r}
+#Make a featureplot of hMEs for each module
+plot_list <- ModuleFeaturePlot(
+  larave.intigrated ,
+  features='hMEs', # plot the hMEs
+  order=TRUE # order so the points with highest hMEs are on top
+)
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=4)
+```
+
+```{r}
+#Plot module correlagram
+module.corr <- ModuleCorrelogram(larave.intigrated)
+```
+
+```{r}
+#Get module network
+mPlot <- ModuleNetworkPlot(larave.intigrated)
+mPlot
+```
+
+```{r}
+#Hubgene network
+HubGeneNetworkPlot(
+  larave.intigrated,
+  n_hubs = 6, n_other=3,
+  edge_prop = 1,
+  mods = 'Module_1',
+  edge.alpha = 0.5,
+  vertex.label.cex = 1,
+  hub.vertex.size = 4,
+  other.vertex.size = 4,
+)
+```
+ 
